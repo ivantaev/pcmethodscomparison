@@ -4,26 +4,10 @@ Created on Thu Dec  1 10:35:10 2022
 
 @author: Vlad
 """
-import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import itertools
-import matplotlib.colors as colors 
 import time
-from shapely.geometry import Polygon
-import glob
-import matplotlib as mpl
-import scipy
-from scipy.stats import pearsonr
-
-mpl.rcParams['pdf.fonttype'] = 42
-mpl.rcParams['ps.fonttype'] = 42
-mpl.rcParams['font.size'] = 9
-mpl.rcParams['lines.linewidth'] = 1
-mpl.rcParams['savefig.transparent']=True
-mpl.rcParams['font.family'] = 'sans-serif'
-mpl.rcParams['font.sans-serif'] = ['Arial']
-mpl.rcParams['savefig.bbox']='tight'
+from scipy.stats import pearsonr, sem
 
 populations = ['all', 'non-PC', 'PC-one', 'PC-both']
 #%%
@@ -158,9 +142,6 @@ def pop_vec_corr(Pf,pc_ind,cell_ind,ds=True):
     
     N_samp = 100 #100
     N_pix = 19
-    #ds_data_dir = glob.glob(r'C:\Users\Vlad\Desktop\BCF\Alis_data\Data\popvec_ds.mat')
-    #if ds_data_dir:
-    #    Data_ds = scipy.io.loadmat(ds_data_dir[0], struct_as_record=False, squeeze_me=True)
     for key in keys:
         
         N_cells = len(cell_ind[key])
@@ -170,9 +151,7 @@ def pop_vec_corr(Pf,pc_ind,cell_ind,ds=True):
         print(key)
         Map_stack = {population: [[] for i in range(2)] for population in populations}
         for j in range(N_cells):
-            #print(j)
             Day = ['Day%d'%int(key.split('_')[i]) for i in range(2)]
-            #day2 = 'Day%d'%int(key.split('_')[1])
             for k in range(2):
                 Map_stack['all'][k].append(
                     Pf[Day[k]][cell_ind[key][j][k]]['map'][4:23,4:23])
@@ -206,7 +185,6 @@ def pop_vec_corr(Pf,pc_ind,cell_ind,ds=True):
                             = pearsonr(map_stack[0,:,k,j], map_stack[1,:,k,j])
                         
                 Corrs['full'][population][key] = [pop_vec_corr, len(map_stack[0])]
-        #if not ds_data_dir: 
         if ds:
             t = time.time()
             N_pcb = 0    
@@ -328,3 +306,51 @@ def visualize_corrs(Input,typ):
         return corrs_full, N_cells
     elif typ == 'pfcorr':
         return corrs_full
+
+def simulate_pc_recc(Multiind,days_pooled):
+    """
+    Simulates uniform place cell recurrence
+    
+    Parameters 
+    ----------
+    Multiind - dictionary containing tracked cell indices for each PC detection method for each mouse
+    days_pooled - list containg indices of all pooled sessions
+    
+    Returns
+    ----------
+    PC_prob_1d - 2D array containing mean and sem of recurrence probability of simulated PCs for each day
+    pc_prob_1d - dictionary contating mean simulated PC recurrence probability for eachmouse and each day
+    PC_counts - 2D array containing mean and sem of simulated PCs counts for each day
+    """
+    p_pc = 0.175
+    mice = list(Multiind['SI'].keys())
+    N_days = len(days_pooled)
+    pc_prob_1d = {mouse: [[]  for _ in range(N_days)] for mouse in mice}
+    pc_counts = {mouse: [0 for _ in range(N_days)] for mouse in mice}
+    PC_prob_1d, PC_counts = (np.zeros((N_days,2)) for _ in range(2))
+    for mouse in mice:
+        N_cells = np.shape(Multiind['SI'][mouse])[0]
+        
+        for cell in range(N_cells):
+            c = 0
+            for day in range(np.shape(Multiind['SI'][mouse])[1]):
+                if Multiind['SI'][mouse][cell,day] != -1:
+                    prob = np.random.uniform()
+                    if prob <= p_pc:
+                        pc_prob_1d[mouse][day].append(1)
+                        c += 1
+                        prob = np.random.uniform()
+                    else:
+                        pc_prob_1d[mouse][day].append(0)
+
+            pc_counts[mouse][c] +=  1
+        for day in range(np.shape(Multiind['SI'][mouse])[1]):
+            pc_prob_1d[mouse][day] = np.mean(np.array(pc_prob_1d[mouse][day]))
+        pc_counts[mouse] =  np.array(pc_counts[mouse])/sum(pc_counts[mouse])
+    
+    for i in range(N_days):
+        PC_prob_1d[i,0] = np.mean(np.array([pc_prob_1d[mouse][i] for mouse in mice if pc_prob_1d[mouse][i]]))
+        PC_prob_1d[i,1] = sem(np.array([pc_prob_1d[mouse][i] for mouse in mice if pc_prob_1d[mouse][i]]))
+        PC_counts[i,0] = np.mean(np.array([pc_counts[mouse][i] for mouse in mice]))
+        PC_counts[i,1] = sem(np.array([pc_counts[mouse][i] for mouse in mice]))
+    return PC_prob_1d, pc_prob_1d, PC_counts

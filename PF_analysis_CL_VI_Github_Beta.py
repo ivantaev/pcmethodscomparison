@@ -7,7 +7,7 @@ Created on Fri Nov 25 11:09:52 2022
 import numpy as np
 import scipy
 import time
-import glob
+from scipy.stats import pearsonr
 
 from data_handler_Github_Beta import digest_nemo_data 
 
@@ -78,33 +78,31 @@ def occupancy(xyt, calc_ang=True): #
         return occupancy, X, Y
 
 
-def spike_coordinates(stimes,amplitudes,xyt,shuffled=False):
+def spike_coordinates_onecell(stimes,amplitudes,xyt,shuffled=False):
     """
-    Determines the Ca2+ activity coordinates by extrapolation from the trajectory
+    Determines the Ca2+ activity coordinates by extrapolation from the trajectory for a single cell
     
     Parameters 
     ----------
     stimes - 1D array containing times of calcium events occurrances
     amplitudes - 1D array containing amplitudes of corresponding calcium events
     xyt - 2D array containing x,y,timestamps,head directions,velocities
+    shuffled - boolean indicating whether the coordinates are shuffled
     
     Returns
     xytsp - 2D array containing x,y,time,angle, and velocity of each event from stimes
-    xytsp_quick - same as xytsp, but only the ones that occured at v>V
-    xyt_quick - same as xyt, but only the ones that occured at v>V
     """
-    V = 5 # cm/s, speed threshold
     btimes = xyt[:,2] # trajectory timestamps
     xytsp = np.zeros((len(stimes),6)) # x, y, t, angle, amplitude, V_spikes
-    xyt_quick = xyt[xyt[:, 4] > V] # future chunks of trajectory that happened at v>V
     
     for ns, st in enumerate(stimes): # st are times in stimes with an index ns
         ipast = np.where(st < btimes)[0] # determine the indices, where activity times are smaller than the trajectory ones
-        if len(ipast) == 0 and not shuffled: # if st happened after the end of btimes...
-            xytsp = xytsp[np.all(xytsp != 0, axis = 1)] # ...delete all the zero elements...
-            break # and break the loop
-        elif len(ipast) == 0 and shuffled == True:
-            continue
+        if len(ipast) == 0:
+            if not shuffled: # if st happened after the end of btimes...
+                xytsp = xytsp[np.all(xytsp != 0, axis = 1)] # ...delete all the zero elements...
+                break # and break the loop
+            else:
+                continue
         if len(ipast) == np.shape(xyt)[0]: # if a spike occurs at initial point
             continue # skip the spike
         else:
@@ -125,9 +123,30 @@ def spike_coordinates(stimes,amplitudes,xyt,shuffled=False):
             xytsp[ns,3] = np.angle(np.exp(1j * (a0 + da)))
         else: # otherwise take the last point
             xytsp[ns, [0, 1, 3, 5]] = xyt[i0, [0, 1, 3, 5]] # assign x, y, angle, v 
-    xytsp_quick = xytsp[xytsp[:, 5] > V]
-    return xytsp,xytsp_quick, xyt_quick
+    return xytsp
 
+def spike_coordinates(stimes, amplitudes, xyt, shuffled=False):
+    """
+    Determines the Ca2+ activity coordinates by extrapolation from the trajectory for all cells
+    
+    Parameters 
+    ----------
+    stimes - a list over cells containing 1D arrays containing times of calcium events occurrances
+    amplitudes - a list over cells containing 1D arrays containing amplitudes of corresponding calcium events
+    xyt - 2D array containing x,y,timestamps,head directions,velocities
+    
+    Returns
+    Xytsp - a list over cells containing 2D arrays containing x,y,time,angle, and velocity of each event from stimes
+    xytsp_quick - same as Xytsp, but only if v_spike>5 cm/s
+    xyt_quick - trajectory samples that occur for running velocity > 5cm/s
+    """
+    Xytsp = [spike_coordinates_onecell(st, amp, xyt, shuffled=shuffled) 
+             for st, amp in zip(stimes, amplitudes)]
+
+    xytsp_quick = [xytsp[np.argwhere(xytsp[:,4] > 5),:].squeeze() for xytsp in Xytsp]
+    xyt_quick = xyt[xyt[:, 4] > 5]
+
+    return Xytsp, xytsp_quick, xyt_quick
 
 def mapstat(map,occ): #determines the statistics
     """
@@ -179,9 +198,7 @@ def shuffles_circ(xyt, shift):
     shift - float of s
     
     Returns
-    information - float of spatial information
-    sparsity - float of sparsity 
-    selectivity - float of selectivity
+    Xyt_sh - xyt circularly shuffled by shift
     """
     xyt_shuff = np.copy(xyt)
     xyt_shuff[:,2] += shift # add the shift to all the times
@@ -283,9 +300,9 @@ def signal_proc(cadata, N_out, timearr, Elim_time):
     Elim_time - List containing corresponding times that need to be cut out of the transient 
     
     Returns
-    Cadata - 1D array containing filtered Ca2+ data for N_cells
-    Stimes - 1D array containing filtered Ca2+ activity timestamps for N_cells
-    Amplitudes - 1D array containing filtered Ca2+ activity timestamps for N_cells
+    Cadata - 1D arrays of filtered Ca2+ data for N_cells
+    Stimes - 1D arrays of filtered Ca2+ activity timestamps for N_cells
+    Amplitudes - 1D arrays of filtered Ca2+ activity timestamps for N_cells
     """
     Stimes, Amplitudes, Cadata = (np.empty(N_out, dtype = object) for i in range(3))
     for i in range(N_out): 
@@ -404,6 +421,7 @@ def create_mask():
     mask.fill(np.nan)
     [X,Y] = np.meshgrid(np.linspace(0, L, N_steps, endpoint=True),
                         np.linspace(0, L, N_steps, endpoint=True))
+    
     for i in range(N_steps):
         for j in range(N_steps):
             # for each pixel calculate the radius
@@ -412,10 +430,34 @@ def create_mask():
                 mask[i,j] = 1 # replace nan with 1
     return mask
 
-
-def placefield(xyt,xytsp,xytsp_quick,nanmask,savenames,n_shuffles=0): 
+def split_half_correlation(xyt, xytsp, nanmask):
     """
-    Calculates place fields from the trajectory and Ca2+ data
+    Computes split-half correlation between 2 halved placefields
+    
+    Parameters 
+    ----------
+    xyt - 2D array containing x,y,timestamps,head directions,velocities
+    xytsp - 2D array containing x,y,time,angle, and velocity of each event from stimes
+    
+    Returns
+    SHC - split-half correlation value
+    """
+    start = np.shape(xyt)[0]//2
+    xytsp1 = xytsp[np.where(xytsp[:,2]<xyt[start,2])[0]] #spikes in the first half of the trajectory
+    xyt1 = xyt[:start,:]
+    occ1, X1,Y1,docc1,A1 = occupancy(xyt1)
+    map1, _, _, _ = calc_maps(xytsp1, occ1, docc1, X1, Y1, A1, nanmask)
+    xytsp2 = xytsp[np.where(xytsp[:,2]>xyt[start,2])[0]] #spikes in the second half of the trajectory  
+    xyt2 = xyt[start:,:]
+    occ2, X2,Y2,docc2,A2 = occupancy(xyt2)
+    map2, _, _, _ = calc_maps(xytsp2, occ2, docc2, X2, Y2, A2, nanmask)
+    SHC, _ = pearsonr(map1[~np.isnan(map1)], map2[~np.isnan(map2)])
+    
+    return SHC
+
+def placefield(xyt,xytsp,xytsp_quick,n_shuffles=0, pc_meth='SI'): 
+    """
+    Calculates one place field from the trajectory and one Ca2+ trace
     
     Parameters 
     ----------
@@ -430,6 +472,7 @@ def placefield(xyt,xytsp,xytsp_quick,nanmask,savenames,n_shuffles=0):
     pf - dictionary containing all the placefield relevant variables
     dpf - dictionary containing all the directional field relevant variables
     """
+    nanmask = create_mask() # create a 2D boolean mask reflecting the circular arena
     occ, X, Y, docc, A = occupancy(xyt) # calculate occupancy from xyt
     """use quick spikes and occupancy to calculate placefield and directional field"""
     map, rates, dmap, drates = calc_maps(xytsp_quick,occ,docc,X,Y,A,nanmask)
@@ -438,136 +481,103 @@ def placefield(xyt,xytsp,xytsp_quick,nanmask,savenames,n_shuffles=0):
     RVS = np.abs(np.sum(np.exp(1j * A) * dmap) / np.sum(dmap)) 
     """construct the spike times array with amplitudes"""
     stimes = np.array([xytsp_quick[:,2], xytsp_quick[:,4]]).swapaxes(0,1)
-
     RVS_shuff = np.empty(n_shuffles,dtype='float') # array of shuffled RVS values
     info_shuff = np.empty(n_shuffles,dtype='float') # array of shuffled SI avlues
+    if pc_meth == 'SHC':
+        SHC = split_half_correlation(xyt, xytsp,nanmask)
+        print('Original SHC value is: %.2f'%SHC)
+        corr_shuff = np.zeros(n_shuffles, dtype = 'float')
+        count = 0
     for nshuff in range(n_shuffles): # for each shuffle
         """draw the shift from a random uniform distribution
         mimum value - 60s, maximum - 60s before the last spike"""
         shift = np.random.uniform(low = 60, high = xytsp[-1,2] - 60)
         xyt_shuff = shuffles_circ(xyt,shift) # shift the coordinates
-        [occ_shuff,_,_,docc_shuff,_] = occupancy(xyt_shuff) # calculate the shuffled occupancy
-        """calculate the shuffled spikes positions"""
-        xyt_sp_shuff,_,_ = spike_coordinates(stimes[:,0],stimes[:,1],xyt_shuff,
+        xyt_sp_shuff = spike_coordinates_onecell(stimes[:,0],stimes[:,1],xyt_shuff,
                                              shuffled=True)
-        """calculate the shuffled placefield"""
-        map_shuff, rates_shuff, dmap_shuff, _ = calc_maps(xyt_sp_shuff,occ_shuff,
-                                                          docc_shuff,X,Y,A,nanmask)
-        info_shuff[nshuff], _, _ = mapstat(map_shuff,occ_shuff) # shuffled SI
-        """calculate shuffled RVS:"""
-        RVS_shuff[nshuff] = np.abs(np.sum(np.exp(1j*A)*dmap_shuff)/np.sum(dmap_shuff))
-        if info_shuff[nshuff] > information: # if SI_shuff exceeds original SI:
-            print('shuff %d, information: %.2f, true value: %.2f'  # print
-                  %(nshuff,info_shuff[nshuff],information))
-            with open (savenames, 'a') as file: # write to file savenames
-                file.write('shuff %d, information: %.2f, true value: %.2f' 
-                           %(nshuff,info_shuff[nshuff],information)+'\n')
+        if pc_meth=='SI':
+            [occ_shuff,_,_,docc_shuff,_] = occupancy(xyt_shuff) # calculate the shuffled occupancy
+            """calculate the shuffled spikes positions"""
+            
+            """calculate the shuffled placefield"""
+            map_shuff, rates_shuff, dmap_shuff, _ = calc_maps(xyt_sp_shuff,occ_shuff,
+                                                              docc_shuff,X,Y,A,nanmask)
+            info_shuff[nshuff], _, _ = mapstat(map_shuff,occ_shuff) # shuffled SI
+            """calculate shuffled RVS:"""
+            RVS_shuff[nshuff] = np.abs(np.sum(np.exp(1j*A)*dmap_shuff)/np.sum(dmap_shuff))
+            if info_shuff[nshuff] > information: # if SI_shuff exceeds original SI:
+                print('shuff %d, information: %.2f, true value: %.2f'  # print
+                      %(nshuff,info_shuff[nshuff],information))
+        elif pc_meth == 'SHC':
+            corr_shuff[nshuff] = split_half_correlation(xyt, xyt_sp_shuff, nanmask)
+            if corr_shuff[nshuff]>=SHC:
+                print('shuff %d, correlation: %.2f, true value: %.2f' %(nshuff,corr_shuff[nshuff],SHC))
+                count += 1
     if n_shuffles > 0:
-        pR = np.sum(RVS <= RVS_shuff) / n_shuffles # RVS significance
-        pI = np.sum(information <= info_shuff) / n_shuffles # SI significance
+        if pc_meth=='SI':
+            pR = np.sum(RVS <= RVS_shuff) / n_shuffles # RVS significance
+            pI = np.sum(information <= info_shuff) / n_shuffles # SI significance
+            print(pI)
+        elif pc_meth=='SHC':
+            p = count / n_shuffles
+            print(p)
     else:
-        pR = np.nan
-        pI = np.nan
-    # construct pf
-    print(pI)
-    with open (savenames, 'a') as file: # write ous SI significance to savenames
-        file.write('%.2f'%pI+'\n')
-    pf={'stats': {'info': information, 'spars': sparsity, 'sel': selectivity, 
-                  'pval': pI},
-        'map':map,'occ':occ, 'rates':rates}
-
-    dpf={'stats': {'R': RVS, 'pval': pR},'map':dmap,'occ':docc, 'rates':drates}
+        pR, pI, p = (np.nan for _ in range(3))
         
+    # construct pf
+    
+    if pc_meth=='SI':
+        pf={'stats': {'info': information, 'spars': sparsity, 'sel': selectivity, 
+                      'pval': pI},
+            'map':map,'occ':occ, 'rates':rates}
+    
+        dpf={'stats': {'R': RVS, 'pval': pR},'map':dmap,'occ':docc, 'rates':drates}
+    elif pc_meth == 'SHC':
+        #print(p)
+        pf={'stats': {'info': information, 'spars': sparsity, 'sel': selectivity, 'pval': p, 'SHC':SHC},\
+            'map':map,'occ':occ, 'rates':rates}
+
+        dpf={'stats': {'R': RVS, 'pval': np.nan},'map':dmap,'occ':docc, 'rates':drates}
     return pf, dpf
 
-
-def main_multiday_V2(names, datatype, Days_dict, savenames, N_shuffles=0):
+def main(names, datatype, savenames, Days_dict, N_shuffles=0, pc_meth='SI'):
     """
-    Main function to perform the multiday placefield analysis in one subject
+    Main processing function with customizable parameters.
+    Extracts all the relevant data, cleans it, computes spike coordinates
+    and placefields (with significance). Saves everything in a dictionary for each day
+    """
+    print(f"Running analysis with N_shuffles={N_shuffles}, pc_meth={pc_meth}")
     
-    Parameters 
-    ----------
-    names - list of strings needed for loading data (see digest_nemo_data)
-    datatype - a string, name of signal type extracted
-    Days_dict - a dictionary, shows correspondence between in (0,N_days): mouse session numbers
-    savenames - a list of strings, contains list of main output .mat files,
-                the working directory to save the cleaned signal,
-                and a list of output text files to track the progress of the pipeline
-    N_shuffles - number of shuffled to determine SI significance of indicidual placefields
-    """    
-    print('digesting CaImAn output with %s signal...' %datatype)
+    Data = digest_nemo_data(names[0], names[1], datatype)
+    xyt = Data['xyt']
+    snr = Data['snr']
+    cadata = Data['signal']
+    multiind = Data['multiind']
+    N_days = len(cadata)
     
-    Data = digest_nemo_data(names[0], names[1], datatype) # arange raw data into a single file 
-    xyt = Data['xyt'] # trajectory
-    snr = Data['snr'] # snr of the traces
-    cadata = Data['signal'] # Ca2+ transients
-    multiind = Data['multiind'] # multiday aranged indices
-    N_days = len(cadata) 
-    """create array of timestamps for each day"""
-    t_arr = [np.linspace(0, xyt[i][-1,2], np.shape(cadata[i])[1]) for i in range(N_days)]
-    mask = create_mask() # create a 2D boolean mask reflecting the circular arena
-    """For each day: modify and clean teh trajectory (see angle_vel_calc)"""
+    t_arr = [np.linspace(0, xyt[i][-1, 2], np.shape(cadata[i])[1]) for i in range(N_days)]
     xyt_full, Elim_time = zip(*[angle_vel_calc(xyt[i]) for i in range(N_days)])
-    Data_out_dict = {} # future array of output data
-    Xyt = np.empty(N_days, dtype=object)
-
-    for j in range(N_days): 
-        Xyt[j] = xyt_full[j]
-        print('Processing data for day %d of %d...'%(j+1, N_days))
+    signal, stimes, amplitudes = zip(*[signal_proc(cadata[i], len(snr[i]), t_arr[i], Elim_time[i]) for i in range(N_days)]) #N_cells
+    for j in range(N_days):
+        N_cells = len(snr[j])
+        print(f'Processing data for day {j+1} of {N_days}...')
+        Pf_full, Dpf, Xytsp = (np.empty(N_cells, dtype=object) for i in range(3))
+        xytsp, xytsp_quick,xyt_quick = spike_coordinates(stimes[j], amplitudes[j], 
+                                                         xyt_full[j])
         
-        with open (savenames[-1][j], 'a') as file: # write out to dump text file 
-            file.write('Processing data for day %d of %d...'%(j+1, N_days)+'\n')
-        print('digesting raw data...')
-        N_cells = len(snr[j]) # number of cell detected within the session
-        print('extracting signal...')
-        Pf_full, Dpf, Xytsp = (np.empty(N_cells, dtype=object) for i in range(3)) # placefields, degree fields, activity coordinates
-        sign_dir = glob.glob(savenames[1]+
-                             r'\Day%d\Processed_signal_Day%d_15sig_new_%s.mat'
-                             %(Days_dict['%d'%(j+1)],Days_dict['%d'%(j+1)],
-                               datatype)) # search for the cleaned signal file
-        print(sign_dir)
-        if not sign_dir: # if not found
-            signal, stimes, amplitudes = signal_proc(cadata[j], N_cells, 
-                                                     t_arr[j], datatype,
-                                                     Elim_time[j]) # process the data
-            signal_data = {'signal': signal, 'stimes': stimes,
-                           'amplitudes': amplitudes}
-            scipy.io.savemat(savenames[1]
-                             +r'\Day%d\Processed_signal_Day%d_15sig_new_%s.mat'
-                             %(Days_dict['%d'%(j+1)],Days_dict['%d'%(j+1)], 
-                               datatype), 
-                             signal_data) # and save it
-        data = scipy.io.loadmat(savenames[1]
-                                +r'\Day%d\Processed_signal_Day%d_15sig_new_%s.mat'
-                                %(Days_dict['%d'%(j+1)],Days_dict['%d'%(j+1)],
-                                  datatype)) # load the data (if/once) saved
-        signal = data['signal'] 
-        stimes = data['stimes'].squeeze()
-        amplitudes = data['amplitudes'].squeeze()
-        
-        print('start placefield calculation...')
         for i in range(N_cells): # for each cell
             t = time.time()
-            xytsp, xytsp_quick,xyt_quick = spike_coordinates(stimes[i][0,:], 
-                                                             amplitudes[i][0,:], 
-                                                             xyt_full[j])
-            pf, dpf = placefield(xyt_quick, xytsp, xytsp_quick, mask, 
-                                 savenames[-1][j], savenames[1]+r'\Day%d\cell_%d'
-                                 %(Days_dict['%d'%(j+1)],i+1), 
-                                 n_shuffles=N_shuffles, shuffmeth='circ')
+            pf, dpf = placefield(xyt_quick, xytsp[i], xytsp_quick[i], n_shuffles=N_shuffles, pc_meth=pc_meth)
             Pf_full[i] = pf
             Dpf[i] = dpf
-            Xytsp[i] = xytsp
+            Xytsp[i] = xytsp[i]
             
             print('cell %d/%d, %.2f %% passed, took %.2f seconds' 
                   %(i+1, N_cells, 100 * (i+1)/N_cells, (time.time() - t)))
-            with open (savenames[-1][j], 'a') as file:
-                file.write('cell %d/%d, %.2f %% passed, took %.2f seconds' 
-                           %(i+1, N_cells, 100 * (i+1)/N_cells, 
-                             (time.time() - t))+'\n')
-        Data_out = {'signal' : signal, 'snr': snr[j], 'multiind': multiind,
-                  'trajectory': Xyt, 'stimes' : stimes, 'spike_coordinates' : Xytsp,
+
+        Data_out = {'signal' : signal, 'snr': snr, 'multiind': multiind,
+                  'trajectory': xyt_full, 'stimes' : stimes, 'spike_coordinates' : Xytsp,
                       'Placefields' : Pf_full, 'Degreefields' : Dpf} 
-        Data_out_dict = {'Day%d'%(Days_dict['%d'%(j+1)]): Data_out}   
+        
         print('Saving data...')
-        scipy.io.savemat(savenames[0][j], Data_out_dict)
+        scipy.io.savemat(savenames[0][j], Data_out)

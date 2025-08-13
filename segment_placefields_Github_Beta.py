@@ -55,52 +55,16 @@ def complete_contourline(c_x, c_y, xbound, ybound):
 
     return c_x, c_y, case
 
-def segment_fields_size(xx, yy, rate, map):
+def segment_fields(xx, yy, map, level=0.3):
     
     xbound = (0, xx.shape[1]-1)
     ybound = (0, yy.shape[0]-1)
-    rate = np.nan_to_num(rate) #VI
-    map = np.nan_to_num(map)
+    map = np.nan_to_num(map) #VI
     normmap = map / np.nanmax(map) #HY:max
     # Padding to make sure contour is always closed
     padded_normmap = np.zeros((normmap.shape[0]+10, normmap.shape[1]+10))
     padded_normmap[5:-5, 5:-5] = normmap
-    contours = find_contours(padded_normmap, level=0.3) #HY:0.2
-    for c_each in contours:
-        c_rowi = c_each[:, 0] - 5  # y
-        c_coli = c_each[:, 1] - 5  # x
-        c_rowi, c_coli = np.clip(c_rowi, a_min=ybound[0], a_max=ybound[1]), np.clip(c_coli, a_min=xbound[0], a_max=xbound[1])
-        c_coli, c_rowi, case = complete_contourline(c_coli, c_rowi, xbound=xbound, ybound=ybound)
-        mask = polygon2mask(xx.shape, np.stack([c_rowi, c_coli]).T)  # Remember to transpose!
-        area = mask.sum()
-        meanrate_in = np.mean(rate[mask])
-        
-        c_rowi = np.around(c_rowi).astype(int)
-        c_coli = np.around(c_coli).astype(int)
-        c_x = xx[c_rowi, c_coli]
-        c_y = yy[c_rowi, c_coli]
-        xyval = np.stack([c_x, c_y]).T
-        
-        if area < 6:
-            continue
-        
-        yield area, meanrate_in, xyval, mask 
-
-def segment_fields_mod(xx, yy, freq, rate, level=0.2):
-    
-    xbound = (0, xx.shape[1]-1)
-    ybound = (0, yy.shape[0]-1)
-    rate = np.nan_to_num(rate) #VI
-    freq = np.nan_to_num(freq)
-    normmap = rate / np.nanmax(rate) #HY:max
-    # Padding to make sure contour is always closed
-    padded_normmap = np.zeros((normmap.shape[0]+10, normmap.shape[1]+10))
-    padded_normmap[5:-5, 5:-5] = normmap
-    #padded_normmap[padded_normmap==0] = np.nan
     contours = find_contours(padded_normmap, level=level) #HY:0.2
-    #plt.pcolormesh(xx, yy, rate)
-   # plt.plot(contours[0][:,1], contours[0][:,0])
-    n_fields = len(contours) #VI
     c = 0
     for c_each in contours:
         c += 1
@@ -115,8 +79,9 @@ def segment_fields_mod(xx, yy, freq, rate, level=0.2):
         c_y = yy[c_rowi, c_coli]
         xyval = np.stack([c_x, c_y]).T
         area = mask.sum()
+        meanrate_in = np.mean(map[mask])
         if area < 2:
             continue
         
-        yield mask, xyval, n_fields
+        yield area, meanrate_in, xyval, mask 
             

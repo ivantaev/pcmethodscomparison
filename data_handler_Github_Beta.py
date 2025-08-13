@@ -48,29 +48,14 @@ def digest_nemo_data(caname, trajname, datatype='dec'): #digests the data from N
     
     return Data_out
 
-def compare_traj(result, Mouse, Days_dict, savedirct, singleday=False, savefig = False):
-    
-    N_days = len(Days_dict['Mouse%d'%Mouse])
-    Coord = [[] for i in range(N_days)]
-    
-    for i in range(N_days):
-        #all the coordinates are stored in each result file, so why not load the very first one?
-        coord = result[0]['Day%d'%(Days_dict['Mouse%d'%Mouse]['%d'%(1)])].squeeze()['trajectory'].tolist()
-        if not singleday:
-            coord_list = coord[:,i].tolist()
-            Coord[i] = np.array([coord_list[0][:,0],coord_list[0][:,1], coord_list[0][:,2]]).swapaxes(0,1)
-        else:
-            Coord[i] = coord[:,:3]
-        
-    return Coord
-
-def results_proc_multiday_SI_full(results_dirct, days, pcmeth='Poisson'):
+def results_proc_multiday_SI_full(results_dirct, days, pcmeth='SI'):
     """
     Arranges properly loads and arranges single-mouse data after processing
     Parameters 
     ----------
     results_dirct - a list of strings containing names of processed PF data
     days - a list of sessions numbers for a given mouse
+    pcmeth - a string naming the place cell detection method
     
     Returns
     Xytsp - a dictionary of Ca2+ activity coordinates for each cell in each session
@@ -86,12 +71,12 @@ def results_proc_multiday_SI_full(results_dirct, days, pcmeth='Poisson'):
     n_days = len(results_dirct)
     Xytsp, Signal, Snr, Pf_out, Dpf_out, PC_ind, NPC_ind = ({'Day%d'%day:[] for day in days} for _ in range(7))
     keys = list(Xytsp.keys())
-    if pcmeth=='Brandon':
+    if pcmeth=='SHC':
         Coord = {}
     
     for i in range(n_days):
         pf_list, dpf_list, pc_list, npc_list = ([] for _ in range(4))
-        if pcmeth=='Poisson':
+        if pcmeth=='SI':
             data = scipy.io.loadmat(results_dirct[i])
             day_key = f"Day{days[i]}"
             day_data = data[day_key].squeeze()
@@ -151,7 +136,7 @@ def results_proc_multiday_SI_full(results_dirct, days, pcmeth='Poisson'):
                     "occ": DPF["occ"].tolist(),
                     "rates": DPF["rates"].tolist()
                 })
-        elif pcmeth == 'Brandon':
+        elif pcmeth == 'SHC':
             N_batch = len(results_dirct[i])
             c_old = 0
             for j in range(N_batch):
@@ -199,6 +184,5 @@ def results_proc_multiday_SI_full(results_dirct, days, pcmeth='Poisson'):
         Dpf_out[keys[i]] = dpf_list
         PC_ind[keys[i]] = pc_list
         NPC_ind[keys[i]] = npc_list
-         
 
     return Xytsp, Pf_out, Dpf_out, multiind, Signal, Snr, Coord, PC_ind, NPC_ind

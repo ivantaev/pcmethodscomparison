@@ -23,7 +23,7 @@ Loads the processed data produced by CaImAn software, computes:
 for name in list(globals()):
     if name not in ["__builtins__", "__name__", "__doc__", "__package__"]:
         del globals()[name]
-
+del name
 
 import numpy as np
 import glob
@@ -52,8 +52,8 @@ from PF_analysis_visualization_VI_Github_Beta import (tracked_finder,
 
 #%%
 
-Mouse = [3,18] #[1,3,4,6,8,10,11,14,18,41]
-days = [[1,2,3,4,5,6,9],[2,4,5,6,7]] #[[1,2,8,9],[1,2,3,4,5,6,9],[2,3,4],[1,2,5,7],[1,2,3,4,7],[1,2],[3,5,6],[1,2,3,4,5,6,7],[2,4,5,6,7],[6,7,8,9,10]]
+Mouse = [3,18] 
+days = [[1,2,3,4,5,6,9],[2,4,5,6,7]] 
 days_pooled = np.copy(days[0])
 for m in range(len(Mouse)-1):
     new_days = np.array(days[m+1])
@@ -76,18 +76,18 @@ if len(pc_method) == 1:
     plt_cell_traces(3,1)
 #%%
 for m in range(len(Mouse)):
-    dirct = r'C:\Users\Vlad\Desktop\BCF\Alis_data\Data\Mouse%d\comparison' %Mouse[m]
+    dirct = #r'...\Data\Mouse%d' %Mouse[m]
     Days_dict['Mouse%d'%Mouse[m]] = {'%d'%(j+1): days[m][j] for j in range(len(days[m]))}
     if len(datatype) == 1:
         for method in pc_method:
             print('Mouse%d'%Mouse[m])
             if method == 'SI': 
-                Results = [dirct + r'\data_outputs\Mouse%d_day%d_%s_200shuff_adaptedshuffles_circshuffles_SI.mat' %(
+                Results = [dirct + r'\Mouse%d_day%d_%s_200shuff_adaptedshuffles_circshuffles_SI.mat' %(
                     Mouse[m], days[m][i], datatype[0]) for i in range(len(days[m]))]
                 
             elif method == 'SHC':
                 Results =  [sorted(glob.glob(os.path.join(dirct +\
-                                                          r'\brandon_data\Day%d'%i, 
+                                                          r'\shc_data\Day%d'%i, 
                                                           '*.mat')))  
                             for i in range(len(days[m]))]
             
@@ -153,3 +153,4 @@ compare_correlations(PF_pooled, PC_pooled, cell_ind_pooled, 'popveccorr')
 
 #%%
 compute_PF_shifts(PF_pooled, PC_pooled, non_PC_pooled, cell_ind_pooled,saveex=False)
+

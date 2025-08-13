@@ -1,0 +1,1 @@
+This repository contains the Python3 files that perform the placefield analysis, as well as files that perform the result visualization. The analysis script use .hdf5 files with aligned Ca2+ imaging data; the visualization script requires .mat files, produced by the analisys script.

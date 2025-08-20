@@ -6,4 +6,4 @@ The visualization script (ultimate_comparison_pcmeth.py) uses functions from PF_
 
 The aligned, non-aligned .hdf5 data for 2 mice, the corresponding .cvs trajectory data, as well as the output .mat files for the SI/SHC PC detection methods can be found in a separate repository:
 
-https://gin.g-node.org/ivantaev/Place-cell-detection-data
+https://gin.g-node.org/ivantaev/Place-cell-detection-data?lang=en-US

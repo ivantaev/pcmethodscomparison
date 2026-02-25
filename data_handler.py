@@ -8,6 +8,10 @@ import numpy as np
 import pandas as pd
 import h5py
 import scipy
+from scipy.stats import pearsonr
+import random
+from sklearn import metrics
+import matplotlib.pyplot as plt
 
 def digest_nemo_data(caname, trajname, datatype='dec'): #digests the data from NEMO
     """
@@ -186,3 +190,184 @@ def results_proc_multiday_SI_full(results_dirct, days, pcmeth='SI'):
         NPC_ind[keys[i]] = npc_list
 
     return Xytsp, Pf_out, Dpf_out, multiind, Signal, Snr, Coord, PC_ind, NPC_ind
+
+
+def population_analisys(Signal, PC_index, Cell_ind, multiday, N_comp=10, N_subs=10):
+    """
+    Computes the correlations between cell loads and mean firing rates
+    Parameters 
+    ----------
+    Signal - list containing cells' transients for each day
+    PC_index - list containing the PC indices for each day
+    Cell_ind - tracked cell indices used in cross-day analysis
+    multiday - boolean whether to perform the analysis either on the same- or cross-day basis
+    N_comp - the number of prinicpal components considered
+    N_subs - number of subsamples applied to the NPC population
+    
+    Returns
+    Load_fr_corr - correlation between the cell loads and firing rates
+    Mean_fr - mean firing rates
+    """     
+    fs = 45.0 #Hz
+    dt = 1.0 / fs
+    w = 12
+    if not multiday:
+        Load_fr_corr, Mean_fr = ({cells: [] for cells in ['pc', 'npc']} for _ in range(2))
+        
+        for day in list(Signal.keys()):
+            print('%s of %d'%(day, len(list(Signal.keys()))))
+            if len(PC_index[day]) < 10:
+                for cells in ['pc', 'npc']:
+                    Load_fr_corr[cells].append([])
+                    Mean_fr[cells].append([])
+                continue
+            
+            allc = np.arange(len(Signal[day]), dtype=int)
+            load_fr_corr_pc, load_fr_corr_npc = ([] for _ in range(2))
+            Npc_index = [cell for cell in allc if cell not in PC_index[day]]
+            Corr, mean_fr = ({cells:[] for cells in ['pc', 'npc']} for _ in range(2))
+            for sub in range(N_subs):
+                
+                if len(Npc_index) > len(PC_index[day]):
+                    npc_mask = random.sample(Npc_index, len(PC_index[day]))
+                else:
+                    npc_mask = Npc_index
+                    
+                signal = np.array(Signal[day]).reshape((len(allc),
+                                                        len(Signal[day][0])))
+                
+                signal_pc = signal[PC_index[day],:]
+                signal_npc = signal[npc_mask,:]
+                signal_subs = np.vstack([signal_pc, signal_npc])
+                cov = np.cov(signal_subs, rowvar=True)
+                eigenvalues, eigenvectors = np.linalg.eigh(cov)
+                idx = np.argsort(eigenvalues)[::-1]
+                eigenvalues = eigenvalues[idx]
+                eigenvectors = eigenvectors[:, idx]
+                corr = {cells:[] for cells in ['pc', 'npc']} 
+                load_cells = abs(eigenvectors[:,:N_comp].T @ signal_subs)
+                FR_pc  = np.zeros(np.shape(signal_pc)) 
+                FR_npc = np.zeros(np.shape(signal_npc)) 
+                for t in range(w,np.shape(FR_pc)[1]-w):
+                    FR_pc[:,t] = np.trapz(signal_pc[:,t-w:t+w+1], dx=dt, axis=1) / ((2*w+1) * dt)
+                    FR_npc[:,t] = np.trapz(signal_npc[:,t-w:t+w+1], dx=dt, axis=1) / ((2*w+1) * dt)
+                    
+                FR_pc_mean = np.mean(FR_pc, axis=0)
+                FR_npc_mean = np.mean(FR_npc, axis=0)
+    
+                for comp in range(N_comp):
+                    corr_pc, _ = pearsonr(load_cells[comp,w:-w], FR_pc_mean[w:-w]) 
+                    corr_npc, _ = pearsonr(load_cells[comp,w:-w], FR_npc_mean[w:-w])
+                    corr['pc'].append(corr_pc)
+                    corr['npc'].append(corr_npc)
+                    
+                for cells in ['pc', 'npc']:
+                    Corr[cells].append(corr[cells])
+                    
+                mean_fr['pc'].append(np.mean(FR_pc_mean[w:-w]))
+                mean_fr['npc'].append(np.mean(FR_npc_mean[w:-w]))
+            
+            for cells in ['pc', 'npc']:
+                Load_fr_corr[cells].append(np.mean(np.array(Corr[cells]), axis=0))
+                Mean_fr[cells].append(np.mean(np.array(mean_fr[cells]), axis=0))
+        
+    if multiday:
+        Load_fr_corr, Mean_fr= ({cells: {} for cells in ['pc', 'npc']} for _ in range(2))
+        
+        for day_pair in list(Cell_ind.keys()):
+            print('Day%s of %d'%(day_pair, len(list(Cell_ind.keys()))))
+            Signal_multiday, pc_mask = ([[],[]] for _ in range(2))
+            day1 = day_pair.split('_')[0]
+            day2 = day_pair.split('_')[1]
+            diff = int(day2) - int(day1)
+            key = '%d days'%diff
+            
+            if (len(PC_index['Day%s'%day1]) < 10) or (len(PC_index['Day%s'%day2]) < 10):
+                for cells in ['pc', 'npc']:
+                    if key not in Load_fr_corr[cells]:
+                        Load_fr_corr[cells][key] = []
+                        Mean_fr[cells][key] = []
+                    else:
+                        Load_fr_corr[cells][key].append([])
+                        Mean_fr[cells][key].append([])
+                continue
+            
+            len_sig = min(len(Signal['Day%s'%day1][Cell_ind[day_pair][0][0]]), 
+                          len(Signal['Day%s'%day2][Cell_ind[day_pair][0][0]]))
+            
+            for cell_pair in range(len(Cell_ind[day_pair])):
+                
+                Signal_multiday[0].append(Signal['Day%s'%day1][Cell_ind[day_pair][cell_pair][0]][:len_sig])
+                if Cell_ind[day_pair][cell_pair][0] in PC_index['Day%s'%day1]:
+                    pc_mask[0].append(1)
+                else:
+                    pc_mask[0].append(0)
+                    
+                Signal_multiday[1].append(Signal['Day%s'%day2][Cell_ind[day_pair][cell_pair][1]][:len_sig])
+                if Cell_ind[day_pair][cell_pair][1] in PC_index['Day%s'%day2]:
+                    pc_mask[1].append(1)
+                else:
+                    pc_mask[1].append(0)
+                    
+            Corr, mean_fr = ({cells:[] for cells in ['pc', 'npc']} for _ in range(2))
+            for sub in range(N_subs):
+                signal_multiday = []
+                N_pcs = []
+                for i in range(2):
+                    N_pcs.append(sum(pc_mask[i]))
+                    npc_list = np.where(np.array(pc_mask[i]) == 0)[0]
+                    pc_list = np.where(np.array(pc_mask[i]) == 1)[0]
+                    
+                    if len(npc_list) > len(pc_list):
+                        npc_subs = random.sample(list(npc_list), len(pc_list))
+                    else:
+                        npc_subs = npc_list
+                    for List in [pc_list, npc_subs]:
+                        for cell in List:
+                            signal_multiday.append(Signal_multiday[i][cell])
+                
+                signal_multiday = np.array(signal_multiday).reshape((len(signal_multiday), len_sig))
+                signal_pc = np.vstack([signal_multiday[0:N_pcs[0],:], 
+                                       signal_multiday[-2*N_pcs[1]:-N_pcs[1],:]])
+                
+                signal_npc = np.vstack([signal_multiday[N_pcs[0]:2*N_pcs[0],:], 
+                                       signal_multiday[-N_pcs[1]:,:]])
+                
+                FR_pc  = np.zeros(np.shape(signal_pc)) 
+                FR_npc = np.zeros(np.shape(signal_npc)) 
+                for t in range(w,np.shape(FR_pc)[1]-w):
+                    FR_pc[:,t] = np.trapz(signal_pc[:,t-w:t+w+1], dx=dt, axis=1) / ((2*w+1) * dt)
+                    FR_npc[:,t] = np.trapz(signal_npc[:,t-w:t+w+1], dx=dt, axis=1) / ((2*w+1) * dt)
+                    
+                FR_pc_mean = np.mean(FR_pc, axis=0)
+                FR_npc_mean = np.mean(FR_npc, axis=0)
+                
+                cov = np.cov(signal_multiday, rowvar=True)
+                eigenvalues, eigenvectors = np.linalg.eigh(cov)
+                idx = np.argsort(eigenvalues)[::-1]
+                eigenvalues = eigenvalues[idx]
+                eigenvectors = eigenvectors[:, idx]
+                
+                corr = {cells:[] for cells in ['pc', 'npc']} 
+                load_cells = abs(eigenvectors[:,:N_comp].T @ signal_multiday)
+                for comp in range(N_comp):
+                    corr_pc, _ = pearsonr(load_cells[comp,w:-w], FR_pc_mean[w:-w]) 
+                    corr_npc, _ = pearsonr(load_cells[comp,w:-w], FR_npc_mean[w:-w])
+                    corr['pc'].append(corr_pc)
+                    corr['npc'].append(corr_npc)
+                    
+                for cells in ['pc', 'npc']:
+                    Corr[cells].append(corr[cells])
+                    
+                mean_fr['pc'].append(np.mean(FR_pc_mean[w:-w]))
+                mean_fr['npc'].append(np.mean(FR_npc_mean[w:-w]))
+                
+            for cells in ['pc', 'npc']:
+                if key not in Load_fr_corr[cells]:
+                    Load_fr_corr[cells][key] = []
+                    Mean_fr[cells][key] = []
+                Load_fr_corr[cells][key].append(np.mean(np.array(Corr[cells]), axis=0))
+                Mean_fr[cells][key].append(np.mean(np.array(mean_fr[cells]), axis=0))
+        
+    return Load_fr_corr, Mean_fr
+        

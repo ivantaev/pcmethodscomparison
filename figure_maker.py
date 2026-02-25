@@ -7,6 +7,7 @@ Created on Wed Mar 19 10:55:39 2025
 
 import numpy as np
 import pandas as pd
+import scipy
 import h5py
 
 import matplotlib.pyplot as plt
@@ -21,10 +22,11 @@ import itertools
 import random
 from scipy.sparse import csc_matrix
 from scipy.stats import (pearsonr, kruskal, chi2_contingency,
-                         f_oneway,binomtest)
+                         f_oneway, binomtest)
 
 import statsmodels.api as sm
 from statsmodels.formula.api import ols
+from statsmodels.distributions.empirical_distribution import ECDF
 
 from scipy.stats import sem
 
@@ -856,7 +858,7 @@ def track_stat(Multiind, PC_index, days_pooled, savefig=False):
         p_method = anova_table.loc['C(method)', 'PR(>F)']    
         p_time = anova_table.loc['C(Time)', 'PR(>F)']    
         p_interaction = anova_table.loc['C(method):C(Time)', 'PR(>F)']
-        print('Two-way ANOVA:')
+        print('Two-way ANOVA to compare p (pc occurence) as a function of time:')
         print('p_meth:', p_method,'F:', anova_table.loc['C(method)', 'F'],
               'df:', anova_table.loc['C(method)', 'df'])
         
@@ -871,7 +873,7 @@ def track_stat(Multiind, PC_index, days_pooled, savefig=False):
         simulate_pc_recc(Multiind,days_pooled)
         
         fig, ax = plot_singlefig()
-        print('Results of the binomial test:')
+        print('Results of the binomial test to test p(pc ocurrence) against simulation:')
         for meth in pc_meth:
             ax.errorbar(np.arange(0,N_days), PC_prob_1d[meth][:,0], 
                         yerr=PC_prob_1d[meth][:,1],fmt='o', ms=3, label = meth, 
@@ -892,7 +894,7 @@ def track_stat(Multiind, PC_index, days_pooled, savefig=False):
             plt.savefig(savedirct+r'\figure4K.pdf', format='pdf')
     
     fig, ax = plot_singlefig()
-    
+    print('Results of the one-way ANOVA to compare p(active):')
     for meth in pc_meth:
         for pop in ['all', 'PC']:
             if len(pc_meth) == 2 and pop == 'all':
@@ -911,10 +913,8 @@ def track_stat(Multiind, PC_index, days_pooled, savefig=False):
                                       if len(Surv_prob[meth]['all'][day][mouse])>0]), 
                             np.array([val for mouse in mice for val in Surv_prob[meth]['PC'][day][mouse] 
                                       if len(Surv_prob[meth]['PC'][day][mouse])>0]))
-            
-            print(F.pvalue)
-            print(F.statistic)
-            print(len([val for mouse in mice for val in Surv_prob[meth]['all'][day][mouse] 
+            print(meth, pop, F.pvalue, F.statistic,
+            len([val for mouse in mice for val in Surv_prob[meth]['all'][day][mouse] 
                                       if len(Surv_prob[meth]['all'][day][mouse])>0]), 
                   len([val for mouse in mice for val in Surv_prob[meth]['PC'][day][mouse] 
                                                 if len(Surv_prob[meth]['PC'][day][mouse])>0]))
@@ -1808,7 +1808,7 @@ def visualize_pf_cm_sampling(PF, PC, savefig=False):
     if savefig:
         plt.savefig(savedirct+r'\figure3B_sup.pdf', dpi=1000)
 
-def compute_PF_shifts(PF, PC, non_PC, cell_ind, saveex=False, savefig=False):
+def compute_PF_shifts(PF, PC, non_PC, cell_ind, N_subs=10, saveex=False, savefig=False):
     """
     Detects and plots placefield shifts for PCs 
     
@@ -1831,17 +1831,33 @@ def compute_PF_shifts(PF, PC, non_PC, cell_ind, saveex=False, savefig=False):
                                          for i in range(n)} 
                  for decode_label in decode_labels} for method in pc_meth} 
         
+    COM_shift_rand, Delta_size_rand = ({'%d days'%(i+1):[[] for _ in range(N_subs)] for i in range(n)} for _ in range(2))
+        
     Delta_size = {method: {decode_label: {'%d days'%(i+1):[] for i in range(n)} 
                   for decode_label in decode_labels} for method in pc_meth}
     
     for method in pc_meth:
         c_one, c_both = (0 for i in range(2))
         for key in keys:
+            
             print(key)
             N_cells = len(cell_ind[method][key])
+            day = ['Day%d'%int(key.split('_')[i]) for i in range(2)]
+            if pc_meth.index(method) == 0:
+                val_ind = []
+                for j in range(N_cells):
+                    if (cell_ind[method][key][j][0] in PC[method][day[0]]) \
+                    and (cell_ind[method][key][j][1] in PC[method][day[1]]):
+                        val_ind.append([cell_ind[method][key][j][0], cell_ind[method][key][j][1]])
+                        
+                cellind2 = np.array([cell[1] for cell in val_ind])
+                Cellind2_perm = [[] for _ in range(N_subs)]
+                for s in range(N_subs):
+                    Cellind2_perm[s] = np.random.permutation(cellind2)
+                Perm_ind = [0 for _ in range(N_subs)]
             for j in range(N_cells):
-                Contours, coms, Masks  = ([[] for i in range(2)] for j in range(3))
-                day = ['Day%d'%int(key.split('_')[i]) for i in range(2)]
+                Contours, coms, Masks  = ([[] for _ in range(2)] for _ in range(3))
+                
                 if (cell_ind[method][key][j][0] in non_PC[method][day[0]]) \
                 and (cell_ind[method][key][j][1] in non_PC[method][day[1]]): 
                     
@@ -1869,8 +1885,8 @@ def compute_PF_shifts(PF, PC, non_PC, cell_ind, saveex=False, savefig=False):
                         coms[k].append([step*np.nansum(x_indices * mmap) / mmax, 
                                         step*np.nansum(y_indices * mmap) / mmax])      
                         
-                Com_shifts  = [[] for j in range(len(Masks[0]))] 
-                delta_size = []
+                Com_shifts, delta_size  = ([] for _ in range(2))
+                # = [[] for j in range(len(Masks[0]))] 
                 for k in range(len(Masks[0])):
                     for l in range(len(Masks[1])):
                         shift = np.sqrt((coms[0][k][0]-coms[1][l][0]) ** 2 \
@@ -1879,35 +1895,69 @@ def compute_PF_shifts(PF, PC, non_PC, cell_ind, saveex=False, savefig=False):
                         dsize = step ** 2 * abs(np.sum(Masks[1][l]) \
                                                 - np.sum(Masks[0][k]))
                             
-                        Com_shifts[k].append(shift)
+                        Com_shifts.append(shift)
                         delta_size.append(dsize)
                 daysdiff = int(key.split('_')[1]) - int(key.split('_')[0])
+                
+                if (pc_meth.index(method) == 0) and (cell_ind[method][key][j][0] in PC[method][day[0]]) and (cell_ind[method][key][j][1] in PC[method][day[1]]):
+                    for sub in range(N_subs):
+                        coms_rand, Masks_rand = ([[] for _ in range(2)] for _ in range(2))
+                        shifts_rand, delta_size_rand = ([] for _ in range(2))
+                        map2_sh = PF[method][day[1]][Cellind2_perm[sub][Perm_ind[sub]]]['map']
+                        map = [map1, map2_sh]
+                        for _, _, xyval, mask  in segment_fields(X, Y, map1, level=0.6):
+                            Masks_rand[0].append(mask)
+                        for _, _, xyval, mask in segment_fields(X, Y, map2_sh, level=0.6):
+                            Masks_rand[1].append(mask)
+                        for k in range(2):
+                            for l in range(len(Masks_rand[k])):
+                                mmap = map[k] * Masks_rand[k][l]
+                                y_indices, x_indices = np.indices(mmap.shape)
+                                mmax = np.nansum(mmap)
+                                coms_rand[k].append([step*np.nansum(x_indices * mmap) / mmax, 
+                                                step*np.nansum(y_indices * mmap) / mmax])  
+                                
+                        for k in range(len(Masks_rand[0])):
+                            for l in range(len(Masks_rand[1])):
+                                shifts_rand.append(np.sqrt((coms_rand[0][k][0]-coms_rand[1][l][0]) ** 2 \
+                                                + (coms_rand[0][k][1]-coms_rand[1][l][1]) ** 2))
+                                    
+                                delta_size_rand.append(step ** 2 * abs(np.sum(Masks_rand[1][l]) \
+                                                        - np.sum(Masks_rand[0][k])))
+                        
+                        indmin = np.argmin(np.array(shifts_rand))
+                        COM_shift_rand['%d days'%daysdiff][sub].append(shifts_rand[indmin])
+                        Delta_size_rand['%d days'%daysdiff][sub].append(delta_size_rand[indmin])
+                        Perm_ind[sub] += 1
+                
                 if (cell_ind[method][key][j][0] in PC[method][day[0]])  \
                 and (cell_ind[method][key][j][1] in PC[method][day[1]]):
                     
-                    for k in range(len(Masks[0])):
-                        if len(Com_shifts[k]) == 0:
-                            print(j)
-                        COM_shift[method]['PC-both']['%d days'%daysdiff]['shift'].append(
-                            min(np.array(Com_shifts[k])))
-                        
-                        COM_shift[method]['PC-both']['%d days'%daysdiff]['maxrate'].append(
-                            maxrate1)
-                        
-                        COM_shift[method]['PC-both']['%d days'%daysdiff]['corr'].append(corr)
-                    Delta_size[method]['PC-both']['%d days'%daysdiff].extend(delta_size)
+                    #for k in range(len(Masks[0])):
+                    if len(Com_shifts) == 0:
+                        print(j)
+                    indmin = np.argmin(np.array(Com_shifts))
+                    COM_shift[method]['PC-both']['%d days'%daysdiff]['shift'].append(
+                        Com_shifts[indmin])
+                    
+                    COM_shift[method]['PC-both']['%d days'%daysdiff]['maxrate'].append(
+                        maxrate1)
+                    
+                    COM_shift[method]['PC-both']['%d days'%daysdiff]['corr'].append(corr)
+                    Delta_size[method]['PC-both']['%d days'%daysdiff].append(delta_size[indmin])
                 else:
-                    for k in range(len(Masks[0])):
-                        if len(Com_shifts[k]) == 0:
-                            print(j)
-                        COM_shift[method]['PC-one']['%d days'%daysdiff]['shift'].append(
-                            min(np.array(Com_shifts[k])))
-                        
-                        COM_shift[method]['PC-one']['%d days'%daysdiff]['maxrate'].append(
-                            maxrate1)
-                        
-                        COM_shift[method]['PC-one']['%d days'%daysdiff]['corr'].append(corr)
-                    Delta_size[method]['PC-one']['%d days'%daysdiff].extend(delta_size)
+                    #for k in range(len(Masks[0])):
+                    if len(Com_shifts) == 0:
+                        print(j)
+                    indmin = np.argmin(np.array(Com_shifts))
+                    COM_shift[method]['PC-one']['%d days'%daysdiff]['shift'].append(
+                        Com_shifts[indmin])
+                    
+                    COM_shift[method]['PC-one']['%d days'%daysdiff]['maxrate'].append(
+                        maxrate1)
+                    
+                    COM_shift[method]['PC-one']['%d days'%daysdiff]['corr'].append(corr)
+                    Delta_size[method]['PC-one']['%d days'%daysdiff].append(delta_size[indmin])
                 if saveex:
                     col_cont = ['navy', 'maroon', 'darkgreen', 'darkorange']
                     if c_both<50:
@@ -1962,8 +2012,12 @@ def compute_PF_shifts(PF, PC, non_PC, cell_ind, saveex=False, savefig=False):
                             c_one += 1
                         
                         plt.close()
-    N_subs = 10
+    #N_subs = 10
+    for meas in [COM_shift_rand, Delta_size_rand]:
+        for key in list(meas.keys()):
+            meas[key] = np.mean(np.array(meas[key]),axis=0)
     daysd = ['%d days'%(i+1) for i in range(n)]
+    print(daysd)
     c = {'PC-one':'darkgreen', 'PC-both':'darkred'}
     fcol = {'SI': {'PC-one': 'darkgreen', 'PC-both': 'darkred'}, 
             'SHC': {'PC-one': 'none', 'PC-both': 'none'}}
@@ -1973,22 +2027,24 @@ def compute_PF_shifts(PF, PC, non_PC, cell_ind, saveex=False, savefig=False):
                                         for method in pc_meth} for _ in range(2))
         
     COM_shift_labels, Delta_size_labels, Peakrate_label, Corr_label, \
-    COM_conseq, Corr_conseq = ({method: {decode_label:[] 
+    COM_conseq, Corr_conseq, COM_shift_long, Corr_long = ({method: {decode_label:[] 
                                 for decode_label in decode_labels} for method in pc_meth}
-                               for _ in range(6))
+                               for _ in range(8))
     
     COM_shift_labels_subs, Delta_size_days_subs, Rates_labels_subs, \
-    Corrs_labels_subs, COM_cons_subs, Corrs_cons_subs \
-        = ({method: [] for methon in pc_meth} for _ in range(6))
+    Corrs_labels_subs, COM_cons_subs, Corrs_cons_subs, COM_shift_long_subs, \
+    Corrs_long_subs\
+        = ({method: [] for methon in pc_meth} for _ in range(8))
         
     for method in pc_meth:
         for decode_label in decode_labels:
-            for day in daysd:    
-                COM_shift_days[method][day].extend(
-                    COM_shift[method][decode_label][day]['shift'])
+            for day in daysd:   
+                if decode_label == 'PC-both':
+                    COM_shift_days[method][day].extend(
+                        COM_shift[method][decode_label][day]['shift'])
                 
-                Delta_size_days[method][day].extend(
-                    Delta_size[method][decode_label][day])
+                    Delta_size_days[method][day].extend(
+                        Delta_size[method][decode_label][day])
                 
                 COM_shift_labels[method][decode_label].extend(
                     COM_shift[method][decode_label][day]['shift'])
@@ -2002,11 +2058,19 @@ def compute_PF_shifts(PF, PC, non_PC, cell_ind, saveex=False, savefig=False):
                 Corr_label[method][decode_label].extend(
                     COM_shift[method][decode_label][day]['corr'])
                 
+                if (day[0] == '7') or (day[0] == '8'):
+                    COM_shift_long[method][decode_label].extend(
+                        COM_shift[method][decode_label][day]['shift'])
+                    
+                    Corr_long[method][decode_label].extend(
+                        COM_shift[method][decode_label][day]['corr'])
+                
             COM_conseq[method][decode_label].extend(
                 COM_shift[method][decode_label][daysd[0]]['shift'])
             
             Corr_conseq[method][decode_label].extend(
                 COM_shift[method][decode_label][daysd[0]]['corr'])
+            
             
         shifts = np.zeros((N_subs,len(COM_shift_labels[method]['PC-both']))) 
         dsize = np.zeros((N_subs,len(Delta_size_labels[method]['PC-both']))) 
@@ -2014,6 +2078,8 @@ def compute_PF_shifts(PF, PC, non_PC, cell_ind, saveex=False, savefig=False):
         corrs = np.zeros((N_subs,len(Corr_label[method]['PC-both']))) 
         shifts_cons = np.zeros((N_subs, len(COM_conseq[method]['PC-both'])))
         corrs_cons = np.zeros((N_subs, len(Corr_conseq[method]['PC-both'])))
+        shifts_long = np.zeros((N_subs, len(COM_shift_long[method]['PC-both'])))
+        corrs_long = np.zeros((N_subs, len(Corr_long[method]['PC-both'])))
     
         for j in range(N_subs):
             shifts[j,:] = random.sample(list(COM_shift_labels[method]['PC-one']),
@@ -2034,6 +2100,12 @@ def compute_PF_shifts(PF, PC, non_PC, cell_ind, saveex=False, savefig=False):
             corrs_cons[j,:] = random.sample(list(Corr_conseq[method]['PC-one']),
                                             len(Corr_conseq[method]['PC-both']))
             
+            shifts_long[j,:] = random.sample(list(COM_shift_long[method]['PC-one']),
+                                            len(COM_shift_long[method]['PC-both']))
+            
+            corrs_long[j,:] = random.sample(list(Corr_long[method]['PC-one']),
+                                            len(Corr_long[method]['PC-both']))
+            
         COM_shift_labels_subs[method] = np.mean(shifts, axis = 0)
         Delta_size_days_subs[method] = np.mean(dsize, axis = 0)
         Rates_labels_subs[method] = np.mean(rates, axis = 0)
@@ -2042,10 +2114,14 @@ def compute_PF_shifts(PF, PC, non_PC, cell_ind, saveex=False, savefig=False):
         Corrs_cons_subs[method] = np.mean(corrs_cons, axis=0)
         COM_cons_subs[method] = np.mean(shifts_cons, axis=0)
         Corrs_cons_subs[method] = np.mean(corrs_cons, axis=0)
+        COM_shift_long_subs[method] = np.mean(shifts_long, axis=0)
+        Corrs_long_subs[method] = np.mean(corrs_long, axis=0)
+        
     fmt = {'SI': 'o', 'SHC': 's'}
     col = {'SI': 'darkorange', 'SHC': 'dodgerblue'}
     fig, ax = plot_singlefig()
-    rows = []
+    rows_l, rows_sh = ([] for _ in range(2))
+    print('Significance of random shifts:')
     for method in pc_meth:
         ax.errorbar(np.arange(1,len(daysd)+1), [np.mean(COM_shift_days[method][day]) 
                                                 for day in daysd], 
@@ -2054,47 +2130,84 @@ def compute_PF_shifts(PF, PC, non_PC, cell_ind, saveex=False, savefig=False):
         ax.plot(np.arange(1,len(daysd)+1), [np.mean(COM_shift_days[method][day]) 
                                                 for day in daysd], color=col[method])
     
-        for day in daysd:
+        for day in daysd[:4]:
             for val in COM_shift_days[method][day]:
-                rows.append({'method': method, 'Time': day, 'Value': val})
-    df = pd.DataFrame(rows)
-    ax.legend(frameon=False, bbox_to_anchor=[1,1], loc = 'best')
-    ax.set_ylabel('PF CM shift [cm]')
-    ax.set_xticks(np.arange(1,len(daysd)+1))
-    ax.set_xlabel('Time interval [days]')
-    if len(pc_meth) == 2:
-        model = ols('Value ~ C(method) + C(Time) + C(method):C(Time)', data=df).fit()
-        anova_table = sm.stats.anova_lm(model, typ=2)
-        p_method = anova_table.loc['C(method)', 'PR(>F)']    
-        p_time = anova_table.loc['C(Time)', 'PR(>F)']    
-        p_interaction = anova_table.loc['C(method):C(Time)', 'PR(>F)']
-        print('p_meth:', p_method,'F:', anova_table.loc['C(method)', 'F'], 
-              'df:', anova_table.loc['C(method)', 'df'])
-        
-        print('p_time:', p_time, 'F:', anova_table.loc['C(Time)', 'F'], 
-              'df:', anova_table.loc['C(Time)', 'df'])
-        
-        print('p_int:', p_interaction, 'F:', 
-              anova_table.loc['C(method):C(Time)', 'F'], 'df:',
-              anova_table.loc['C(method):C(Time)', 'df'])
-        
-        if p_interaction > 0.05:
-            sign = determine_significance(p_method)
-            ax.text(ax.get_xlim()[1]/2, ax.get_ylim()[1], sign, ha='center', 
-                    fontsize=8)
+                rows_sh.append({'method': method, 'Time': daysd.index(day), 'Value': val})
+                
+        for day in daysd[4:]:
+            for val in COM_shift_days[method][day]:
+                rows_l.append({'method': method, 'Time': daysd.index(day) - 5, 'Value': val})   
+                
+        for day in daysd:
+            krus = kruskal(COM_shift_days[method][day], COM_shift_rand[day])
+            sign = determine_significance(krus.pvalue)
+            print(day, krus.pvalue, krus.statistic, len(COM_shift_rand[day]), len(COM_shift_days[method][day]))
+            if sign:
+                ax.text(daysd.index(day)+1, ax.get_ylim()[1], sign)
+    
+    ax.errorbar(np.arange(1,len(daysd)+1), [np.mean(COM_shift_rand[day]) 
+                                            for day in daysd], 
+                yerr = [sem(COM_shift_rand[day]) for day in daysd], 
+                fmt=fmt[method],ms=2,color='gray', label = 'random', capsize=2)
+    ax.plot(np.arange(1,len(daysd)+1), [np.mean(COM_shift_rand[day]) 
+                                            for day in daysd], color='gray') 
+    print('Significance of cm shifts:')
+    for rows in [rows_sh, rows_l]:
+        df = pd.DataFrame(rows)
+        #df['time'] = df['Time'].map({})
+        ax.legend(frameon=False, bbox_to_anchor=[1,1], loc = 'best')
+        ax.set_ylabel('PF CM shift [cm]')
+        ax.set_xticks(np.arange(1,len(daysd)+1))
+        ax.set_xlabel('Time interval [days]')
+        if len(pc_meth) == 2:
+            model = ols('Value ~ C(method) + C(Time) + C(method):C(Time)', data=df).fit()
+            anova_table = sm.stats.anova_lm(model, typ=2)
+            p_method = anova_table.loc['C(method)', 'PR(>F)']    
+            p_time = anova_table.loc['C(Time)', 'PR(>F)']    
+            p_interaction = anova_table.loc['C(method):C(Time)', 'PR(>F)']
+            print('p_meth:', p_method,'F:', anova_table.loc['C(method)', 'F'], 
+                  'df:', anova_table.loc['C(method)', 'df'])
             
-        if savefig:
-            fig.savefig(savedirct+r'\figure5I.pdf', format='pdf')
+            print('p_time:', p_time, 'F:', anova_table.loc['C(Time)', 'F'], 
+                  'df:', anova_table.loc['C(Time)', 'df'])
             
-    else:
-        F = kruskal(*[COM_shift_days['SI'][day] for day in daysd[:-1]])
-        print(F.pvalue)
-        print(F.statistic)
+            print('p_int:', p_interaction, 'F:', 
+                  anova_table.loc['C(method):C(Time)', 'F'], 'df:',
+                  anova_table.loc['C(method):C(Time)', 'df'])
+            
+            if p_interaction > 0.05:
+                sign = determine_significance(p_method)
+                ax.text(ax.get_xlim()[1]/2, ax.get_ylim()[1], sign, ha='center', 
+                        fontsize=8)
+                
+            if savefig:
+                fig.savefig(savedirct+r'\figure5I.pdf', format='pdf')
+                
+        if len(pc_meth) != 2:
+            model = ols('Value ~ Time', data=df).fit()
+            #p_time = model.pvalues["Time"]
+            print('pval:', model.f_pvalue, 'F-stat:', model.fvalue, 'df:', model.df_model)
+            if rows == rows_l:
+                day6 = np.array(df[df["Time"]==0]["Value"])
+                day7 = np.array(df[df["Time"]==1]["Value"])
+                day8 = np.array(df[df["Time"]==2]["Value"])
+                print('Comparison for the tail:')
+                print(kruskal(day6, day7).pvalue, kruskal(day6, day7).statistic, len(day6), len(day7))
+                print(kruskal(day6, day8).pvalue, kruskal(day6, day8).statistic, len(day6), len(day8))
+        # F = kruskal(*[COM_shift_days['SI'][day] for day in daysd[:-4]])
+        # print('first days:')
+        # print(F.pvalue)
+        # print(F.statistic)
+        # F = kruskal(*[COM_shift_days['SI'][day] for day in daysd[-4:-1]])
+        # print('last days:')
+        # print(F.pvalue)
+        # print(F.statistic)
         if savefig:
             fig.savefig(savedirct+r'\figure3E.pdf', format='pdf')
     
     fig, ax = plot_singlefig()
-    rows = []
+    rows_sh, rows_l = ([] for _ in range(2))
+    print('Significance of size changes:')
     for method in pc_meth:
         ax.errorbar(np.arange(1,len(daysd)+1), [np.mean(Delta_size_days[method][day]) 
                                                 for day in daysd], 
@@ -2104,39 +2217,69 @@ def compute_PF_shifts(PF, PC, non_PC, cell_ind, saveex=False, savefig=False):
         ax.plot(np.arange(1,len(daysd)+1), [np.mean(Delta_size_days[method][day]) 
                                                 for day in daysd], color=col[method])
         
+        ax.errorbar(np.arange(1,len(daysd)+1), [np.mean(Delta_size_rand[day]) 
+                                                for day in daysd], 
+                    yerr = [sem(Delta_size_rand[day]) for day in daysd], 
+                    fmt=fmt[method],ms=2,color='gray', label='random', capsize=2)
+        
+        ax.plot(np.arange(1,len(daysd)+1), [np.mean(Delta_size_rand[day]) 
+                                                for day in daysd], color='gray')
+        
         for day in daysd:
+            krus = kruskal(Delta_size_days[method][day], Delta_size_rand[day])
+            sign = determine_significance(krus.pvalue)
+            print(day, krus.pvalue, krus.statistic, len(Delta_size_days[method][day]), len(Delta_size_rand[day]))
+            if sign:
+                ax.text(daysd.index(day)+1, ax.get_ylim()[1], sign)
+        
+        for day in daysd[:4]:
             for val in Delta_size_days[method][day]:
-                rows.append({'method': method, 'Time': day, 'Value': val})
-    df = pd.DataFrame(rows)
-    ax.legend(frameon=False, bbox_to_anchor=[1,1], loc = 'best')
-    ax.set_ylabel(r"Change in PF size [$cm^2$]")
-    ax.set_xticks(np.arange(1,len(daysd)+1))
-    ax.set_xlabel('Time interval [days]') 
-    if len(pc_meth) == 2:
-        model = ols('Value ~ C(method) + C(Time) + C(method):C(Time)', data=df).fit()
-        anova_table = sm.stats.anova_lm(model, typ=2)
-        p_method = anova_table.loc['C(method)', 'PR(>F)'] 
-        p_time = anova_table.loc['C(Time)', 'PR(>F)']   
-        p_interaction = anova_table.loc['C(method):C(Time)', 'PR(>F)']
-        print('p_meth:', p_method,'F:', anova_table.loc['C(method)', 'F'], 
-              'df:', anova_table.loc['C(method)', 'df'])
-        
-        print('p_time:', p_time, 'F:', anova_table.loc['C(Time)', 'F'], 
-              'df:', anova_table.loc['C(Time)', 'df'])
-        
-        print('p_int:', p_interaction, 'F:', 
-              anova_table.loc['C(method):C(Time)', 'F'], 
-              'df:', anova_table.loc['C(method):C(Time)', 'df'])
-        
-        if p_interaction > 0.05:
-            sign = determine_significance(p_method)
-            ax.text(ax.get_xlim()[1]/2, ax.get_ylim()[1], sign, ha='center', fontsize=8)
-        if savefig:
-            fig.savefig(savedirct+r'\figure3F.pdf', format='pdf')
-    else:
-        F = kruskal(*[Delta_size_days['SI'][day] for day in daysd[:-1]])
-        print(F.pvalue)
-        print(F.statistic)
+                rows_sh.append({'method': method, 'Time': daysd.index(day), 'Value': val})
+                
+        for day in daysd[4:]:
+            for val in Delta_size_days[method][day]:
+                rows_l.append({'method': method, 'Time': daysd.index(day) - 5, 'Value': val})
+    
+    for rows in [rows_sh, rows_l]:
+        df = pd.DataFrame(rows)
+        ax.legend(frameon=False, bbox_to_anchor=[1,1], loc = 'best')
+        ax.set_ylabel(r"Change in PF size [$cm^2$]")
+        ax.set_xticks(np.arange(1,len(daysd)+1))
+        ax.set_xlabel('Time interval [days]') 
+        if len(pc_meth) == 2:
+            model = ols('Value ~ C(method) + C(Time) + C(method):C(Time)', data=df).fit()
+            anova_table = sm.stats.anova_lm(model, typ=2)
+            p_method = anova_table.loc['C(method)', 'PR(>F)'] 
+            p_time = anova_table.loc['C(Time)', 'PR(>F)']   
+            p_interaction = anova_table.loc['C(method):C(Time)', 'PR(>F)']
+            print('p_meth:', p_method,'F:', anova_table.loc['C(method)', 'F'], 
+                  'df:', anova_table.loc['C(method)', 'df'])
+            
+            print('p_time:', p_time, 'F:', anova_table.loc['C(Time)', 'F'], 
+                  'df:', anova_table.loc['C(Time)', 'df'])
+            
+            print('p_int:', p_interaction, 'F:', 
+                  anova_table.loc['C(method):C(Time)', 'F'], 
+                  'df:', anova_table.loc['C(method):C(Time)', 'df'])
+            
+            if p_interaction > 0.05:
+                sign = determine_significance(p_method)
+                ax.text(ax.get_xlim()[1]/2, ax.get_ylim()[1], sign, ha='center', fontsize=8)
+            if savefig:
+                fig.savefig(savedirct+r'\figure3F.pdf', format='pdf')
+        if len(pc_meth) != 2:
+            model = ols('Value ~ Time', data=df).fit()
+            #p_time = model.pvalues["Time"]
+            print('pval:', model.f_pvalue, 'F-stat:', model.fvalue, 'df:', model.df_model)
+            
+        # F = kruskal(*[Delta_size_days['SI'][day] for day in daysd[:-3]])
+        # print('first days:')
+        # print(F.pvalue)
+        # print(F.statistic)
+        # F = kruskal(*[Delta_size_days['SI'][day] for day in daysd[-3:-1]])
+        # print('last days:')
+        # print(F.pvalue)
+        # print(F.statistic)
         if savefig:
             fig.savefig(savedirct+r'\figure5J.pdf', format='pdf')
 
@@ -2272,6 +2415,49 @@ def compute_PF_shifts(PF, PC, non_PC, cell_ind, saveex=False, savefig=False):
                 fig.savefig(savedirct+r'\figure3B.pdf', format='pdf', dpi=500)   
             else:
                 fig.savefig(savedirct+r'\figure4D_sup.pdf', format='pdf', dpi=500)  
+                
+        fig, ax = plot_singlefig()
+        plt.scatter(COM_shift_long[method]['PC-both'], Corr_long[method]['PC-both'], 
+                      s=1, color=c['PC-both'], facecolor=fcol[method]['PC-both'], 
+                    label='PC/PC', rasterized=True)
+        
+        plt.scatter(COM_shift_long_subs[method], Corrs_long_subs[method], s=1, 
+                      color=c['PC-one'], facecolor=fcol[method]['PC-one'], 
+                                          label='PC/NPC', 
+                                          rasterized=True, alpha=0.3)
+   
+        plt.title('Data for 7/8 days')
+        ax_hist_y = fig.add_axes([0.8 , 0.15, 0.15, 
+                                  ax.get_position().height],
+                                 sharey=ax)
+        
+        ax_hist_x = fig.add_axes([0.15, 0.8, 
+                                  ax.get_position().width,
+                                  0.15],sharex=ax)
+        
+        ax_hist_x.hist(COM_shift_long[method]['PC-both'], bins=75, histtype='step',
+                       color=c['PC-both'], label='PC/PC')
+        
+        ax_hist_x.hist(COM_shift_long_subs[method], bins=75, histtype='step', 
+                       color=c['PC-one'], alpha=0.3, label='PC/NPC')
+        
+        ax_hist_y.hist(Corr_long[method]['PC-both'], bins=75, histtype='step', 
+                       color=c['PC-both'], orientation='horizontal', 
+                       label='PC/PC', density=True)
+        
+        ax_hist_y.hist(Corrs_long_subs[method], bins=75, histtype='step', 
+                       color=c['PC-one'], alpha=0.3, orientation='horizontal', 
+                       label='PC/NPC', density=True)
+        
+        plt.ylabel('Cross-day correlation')
+        ax.set_xlim([0,ax.get_xlim()[1]])
+        ax_hist_x.set_xlim([0,ax.get_xlim()[1]])
+        plt.legend(frameon=False, bbox_to_anchor=[1,1],loc='best')
+        plt.xlabel('CM shift [cm]')
+        if pc_meth.index(method) == 0:
+            fig.savefig(r'C:\Users\Vlad\Desktop\BCF\Manuscript_figures\JNM_files\Figures\1st_edit\Fig3B_SI.pdf', format='pdf', dpi=500)   
+        else:
+            fig.savefig(r'C:\Users\Vlad\Desktop\BCF\Manuscript_figures\JNM_files\Figures\1st_edit\Fig3B_SHC.pdf', format='pdf', dpi=500)   
 
 def compare_size_pcmeth(PF_pooled, pcs, savefig=False):
     """
@@ -2367,9 +2553,18 @@ def plot_maps_pcmeth(PF_pooled, PC_pooled, plot_ex=False, savefig=False):
     
     ax.legend(frameon=False, bbox_to_anchor=[1,1],loc='best')
     ax.set_ylabel('Counts')
-    ax.set_xlabel('SI, [bits]')
+    ax.set_xlabel('SI [bits]')
     if savefig:
         plt.savefig(savedirct+r'\Fig4Dsup.pdf')
+        
+    fig, ax = plot_singlefig()
+    al = {'SI_unique': 1, 'SHC_unique': 1, 'overlap': 0.25}
+    for name in ['SI_unique', 'SHC_unique', 'overlap']:
+        plt.scatter(SI[name], SHC[name], color=col[name], label=name, s=1, alpha=al[name], rasterized=True)
+    ax.set_xlabel('SI [bits]')
+    ax.set_ylabel('SHC')
+    ax.legend(frameon=False, bbox_to_anchor=[1,1],loc='best')
+    plt.savefig(r'C:\Users\Vlad\Desktop\BCF\Manuscript_figures\JNM_files\Figures\1st_edit\SI_SHC_Scatterplot.pdf', dpi=1000)
     
     fig, ax = plot_singlefig()
     for name in ['SI_unique', 'SHC_unique', 'overlap']:
@@ -2603,3 +2798,279 @@ def compare_rates_signal(PF_pooled, PC_pooled,savefig=False):
             meth, np.mean(df_mean[df_mean['signal'] == meth]['Normalized']), 
             np.std(df_mean[df_mean['signal'] == meth]['Normalized'])))
     
+def compare_lowdim_load_new(Load_fr_corr, N_comp=10):
+    """
+    Compares correlations between the cell loads and mean firing rates
+    
+    Parameters 
+    ----------
+    Load_fr_corr - dictionary containing correlations for each mouse for a given temporal separation 
+    N_comp - the number of prinicpal components considered
+    """
+    load_fr_corr = Load_fr_corr['correlations']
+    pc_method = list(load_fr_corr.keys())
+    load_fr_corr_pooled = {method: {cells: {} for cells in ['pc', 'npc']} for method in pc_method}
+    load_fr_corr_sameday = {method: {cells: [[] for _ in range(N_comp)]  for cells in ['pc', 'npc']} for method in pc_method}
+    for method in pc_method:
+        for cells in ['pc','npc']:
+            for m in range(len(load_fr_corr[method])):  
+                days_pairs = list(load_fr_corr[method][m][cells])
+                for pair in days_pairs:
+                    if pair not in load_fr_corr_pooled[method][cells]:
+                        load_fr_corr_pooled[method][cells][pair] = [] 
+                    if pair == '0 days':
+                        N_days = len(load_fr_corr[method][m][cells][pair])
+                        for day in range(N_days):
+                            if len(load_fr_corr[method][m][cells][pair][day]) != 0:
+                                for comp in range(N_comp):  
+                                    if comp < 4:
+                                        load_fr_corr_pooled[method][cells][pair].append(load_fr_corr[method][m][cells][pair][day][comp].item())
+                                    load_fr_corr_sameday[method][cells][comp].append(load_fr_corr[method][m][cells][pair][day][comp].item())
+                    else:
+                        N_pair = len(load_fr_corr[method][m][cells][pair])
+                        for i in range(N_pair):
+                            if len(load_fr_corr[method][m][cells][pair][i]) != 0:
+                                for comp in range(3):
+                                    load_fr_corr_pooled[method][cells][pair].append(load_fr_corr[method][m][cells][pair][i][comp].item())
+    
+    days_pairs = sorted(load_fr_corr_pooled[method][cells])
+    
+    fig, ax = plt.subplots(1,2,figsize=(4,2),facecolor='white', sharey=True)
+    i = 0
+    alpha = {'SI': 1, 'SHC': 1}
+    color = {'SI':{'pc': 'darkorange', 'npc': 'darkred'},'SHC':{'pc': 'dodgerblue', 'npc': 'darkblue'}}
+
+    for method in pc_method:
+        for cells in ['pc','npc']:
+            ax[0].errorbar(np.arange(N_comp), 
+                           [np.mean(load_fr_corr_sameday[method][cells][comp]) for comp in range(N_comp)],
+                           yerr = [sem(load_fr_corr_sameday[method][cells][comp]) for comp in range(N_comp)],
+                           label=method+'-'+'%s'%cells, alpha=alpha[method], color=color[method][cells])
+            
+            ax[1].errorbar(np.arange(len(days_pairs)),
+                         [np.mean(np.array(load_fr_corr_pooled[method][cells][day])) for day in days_pairs],
+                         yerr = [sem(np.array(load_fr_corr_pooled[method][cells][day])) for day in days_pairs],
+                         label=method+'-'+'%s'%cells, alpha=alpha[method], color=color[method][cells])
+    
+    offs = {'SI': 0, 'SHC': 0.05}
+    for day in days_pairs:
+        for method in pc_method:
+            F = f_oneway(load_fr_corr_pooled[method]['pc'][day], 
+                         load_fr_corr_pooled[method]['npc'][day])
+            print('-'*10)
+            print(method, days_pairs.index(day), F.pvalue, F.statistic, 
+                  len(load_fr_corr_pooled[method]['pc'][day]), 
+                  len(load_fr_corr_pooled[method]['npc'][day]))
+            sign = determine_significance(F.pvalue)
+            if sign:
+                ax[1].text(days_pairs.index(day), 0.6 - offs[method], sign, color=color[method]['pc'])
+        
+        F = f_oneway(load_fr_corr_pooled['SI']['pc'][day], 
+                     load_fr_corr_pooled['SHC']['pc'][day])
+        print('-'*10)
+        print(days_pairs.index(day), F.pvalue, F.statistic, 
+              len(load_fr_corr_pooled['SI']['pc'][day]), 
+              len(load_fr_corr_pooled['SHC']['pc'][day]))
+        sign = determine_significance(F.pvalue)
+        if sign:
+            ax[1].text(days_pairs.index(day), 0.5, sign)
+        
+    for comp in range(N_comp):
+        for method in pc_method:
+            F = f_oneway(load_fr_corr_sameday[method]['pc'][comp], 
+                         load_fr_corr_sameday[method]['npc'][comp])
+            print('-'*10)
+            print(method, comp, F.pvalue, F.statistic, 
+                  len(load_fr_corr_sameday[method]['pc'][comp]), 
+                  len(load_fr_corr_sameday[method]['npc'][comp]))
+            sign = determine_significance(F.pvalue)
+            if sign:
+                ax[0].text(comp, 0.2 - offs[method], sign, color=color[method]['pc'])
+            
+        F = f_oneway(load_fr_corr_sameday['SI']['pc'][comp], 
+                     load_fr_corr_sameday['SHC']['pc'][comp])
+        print('-'*10)
+        print(comp, F.pvalue, F.statistic, 
+              len(load_fr_corr_sameday['SI']['pc'][comp]), 
+              len(load_fr_corr_sameday['SHC']['pc'][comp]))
+        sign = determine_significance(F.pvalue)
+        if sign:
+            ax[0].text(comp, 0.1, sign)
+            
+    ax[1].set_xticks(np.arange(len(days_pairs)))
+    ax[0].set_xticks(np.arange(N_comp), labels=np.arange(1,N_comp+1))
+    ax[0].set_xlabel('Principal Component')
+    ax[1].set_xlabel('Time separation [days]')
+    ax[0].set_ylabel('Correlation')
+    ax[0].legend(ncols=4)
+    
+def plot_decoder_results(results_dirct, Mouse, savefig=False):
+    """
+    plots the results of same-day decoding for 1 PC detection method
+    
+    Parameters 
+    ----------
+    results_dirct - directory containing the decoding data
+    Mouse - mouse number used in the plot title
+    savefig - a boolean flag whether to save the plot
+    """
+    result = scipy.io.loadmat(results_dirct,squeeze_me=True)
+    labels = ['all', 'nPC', 'PC']
+    labels_sh = [labels[i] + '_sh' for i in range(len(labels))]
+    N_days = len(result['all'].tolist()[1].tolist())
+    Prediction1, Error1 = ({'%s'%labels[i]: [{'real':[], 'shuffled':[]} for k in range(N_days)] for i in range(len(labels))} for j in range(2))
+
+    for j in range(N_days):
+        for i in range(len(labels)):
+
+            if len(np.shape(result['%s'%labels[i]].tolist()[0])) != 2:
+                Prediction1['%s'%labels[i]][j]['real'] = result['%s'%labels[i]].tolist()[0].tolist()[j]['real'].tolist()
+                Prediction1['%s'%labels[i]][j]['shuffled'] = result['%s'%labels[i]].tolist()[0].tolist()[j]['shuffled'].tolist()
+                Error1['%s'%labels[i]][j]['real'] = result['%s'%labels[i]].tolist()[1].tolist()[j]['real'].tolist()
+                Error1['%s'%labels[i]][j]['shuffled'] = result['%s'%labels[i]].tolist()[1].tolist()[j]['shuffled'].tolist()
+            else:
+                Prediction1['%s'%labels[i]][j]['real'] = result['%s'%labels[i]].tolist()[0]['real'].tolist()
+                Prediction1['%s'%labels[i]][j]['shuffled'] = result['%s'%labels[i]].tolist()[0]['shuffled'].tolist()
+                Error1['%s'%labels[i]][j]['real'] = result['%s'%labels[i]].tolist()[1]['real'].tolist()
+                Error1['%s'%labels[i]][j]['shuffled'] = result['%s'%labels[i]].tolist()[1]['shuffled'].tolist()
+
+    figs = 1
+    colors_sh = 'dimgray'
+    colors = ['purple', 'royalblue', 'darkorange']
+    fig, ax = plt.subplots(3,N_days, sharex=True,sharey=True, figsize=(figs*N_days,figs*3))  
+    savedirct = r'C:\Users\Vlad\Desktop\BCF\Manuscript_figures\eps_figures\Fig4_decoding'
+    for j in range(len(labels)):
+        for i in range(N_days):
+            ax[j,i].axes.spines[['top','right']].set_visible(False)
+            titlex, titley = ('Day%d'%(i+1) for k in range(2))
+            title_error = 'Day%d'%(i+1)
+
+            ax[j,i].hist(Error1['%s'%labels[j]][i]['real'], bins=100, density=True, label=labels[j], color=colors[j], histtype='step')
+            ax[j,i].axvline(np.median(Error1['%s'%labels[j]][i]['real']),color=colors[j],linestyle='--')
+            ax[j,i].hist(Error1['%s'%labels[j]][i]['shuffled'], bins=100, density=True, label=labels_sh[j], color=colors_sh, histtype='step')
+            
+            pval_err = kruskal(Error1['%s'%labels[j]][i]['real'], Error1['%s'%labels[j]][i]['shuffled']).pvalue
+            sign_er = determine_significance(pval_err)
+            ax[j,i].text((np.median(Error1['%s'%labels[j]][i]['real'])+np.median(Error1['%s'%labels[j]][i]['shuffled']))/2, y=ax[j,i].get_ylim()[1], s=sign_er, ha='center', color='black')
+            
+            ax[j,i].axvline(np.median(Error1['%s'%labels[j]][i]['shuffled']),color=colors_sh,linestyle='--')
+            krus = kruskal(Error1['%s'%labels[j]][i]['real'], Error1['%s'%labels[j]][i]['shuffled'])
+            print('-'*10)
+            print(labels[j], i, krus.pvalue, krus.statistic)
+
+            ax[0,i].set_title(title_error, loc='right')
+            ax[j,i].set_xticks([0,10,20,30,40,50])
+            ax[j,i].set_yticks([0,0.05,0.1])
+              
+        ax[j,-1].legend(frameon=False, bbox_to_anchor=[1,1],loc='best')
+        ax[j,0].set_xlim([0,50])
+    
+    fig.supxlabel('Absolute decoding error [cm]')
+    fig.supylabel('Counts')
+    fig.suptitle('Mouse%d, same day'%(Mouse))
+    
+    if savefig:
+        fig.savefig(savedirct+r'\Mouse%d_fullerr.pdf'%(Mouse), format='pdf', dpi=500)
+    
+def plot_decoder_results_pcmeth_new(results_dirct, PC_index, mouse, savefig=False):
+    """
+    Compares the decoding performances for 2 PC detection methods
+    
+    Parameters 
+    ----------
+    PF_pooled - a dictionary of placefield data computed from 2 signal species pooled across mice
+    PC_pooled - a dictionary of PC indices from 2 signal species pooled across mice
+    
+    Returns
+    ----------
+    Error1 - dictionary of decoding errors for SI-PCs/SHC-PCs/NPCs
+    sess_count - counter of significantly/insignificantly better performances 
+    """
+    labels = ['NPCs', 'SI-PCs', 'SHC-PCs']
+    days = list(PC_index['SI'][mouse].keys())
+    N_days = len(days)
+    Prediction1, Error1 = ({label: [[] for k in range(N_days)] for label in labels} for _ in range(2))
+
+    result = scipy.io.loadmat(results_dirct,squeeze_me=True)
+    for j in range(N_days):
+        for label in labels:
+            Prediction1[label][j] = result[label].tolist()[0].tolist()[j].tolist()
+            Error1[label][j] = result[label].tolist()[1].tolist()[j].tolist()
+
+    figs = 1
+    colors = ['purple', 'orange', 'dodgerblue']
+    fig, ax = plt.subplots(2, N_days, figsize=(figs*N_days,figs*2))  
+    savedirct = r'C:\Users\Vlad\Desktop\BCF\Manuscript_figures\eps_figures\Fig4_decoding'
+    si, shc = (0 for _ in range(2))
+    sess_count = {cells: {'sign': 0, 'nonsign': 0} for cells in ['SI<NPC', 'SHC<NPC', 'SI<SHC']}
+    for i in range(N_days):
+        venn2([set(PC_index['SI'][mouse][days[i]]), set(PC_index['SHC'][mouse][days[i]])], 
+                  set_labels = ('SI', 'SHC'), set_colors=('darkorange', 'dodgerblue'),
+                  ax = ax[0,i])
+        
+        for label in labels:
+            if len(Error1[label][i]) == 0:
+                continue
+            ecdf = ECDF(Error1[label][i])
+            ax[1,i].plot(ecdf.x, ecdf.y, label = label, linestyle='--', 
+                         color=colors[labels.index(label)])
+        
+        krus = kruskal(Error1['NPCs'][i], Error1['SI-PCs'][i])
+        sign_er = determine_significance(krus.pvalue)
+        if np.median(Error1['NPCs'][i]) > np.median(Error1['SI-PCs'][i]):
+            if sign_er:
+                sess_count['SI<NPC']['sign'] += 1
+            else:
+                sess_count['SI<NPC']['nonsign'] += 1
+        
+        ax[1,i].text(1.5, y=ax[1,i].get_ylim()[1], s=sign_er, 
+                     ha='center', color='black')
+        
+        print('-'*10)
+        print(i, krus.pvalue, krus.statistic, len(Error1['NPCs'][i]), 
+              len(Error1['SI-PCs'][i]))
+        
+        krus = kruskal(Error1['SI-PCs'][i], Error1['SHC-PCs'][i])
+        sign_er = determine_significance(krus.pvalue)
+        if np.median(Error1['SHC-PCs'][i]) > np.median(Error1['SI-PCs'][i]):
+            if sign_er[0]:
+                sess_count['SI<SHC']['sign'] += 1
+            else:
+                sess_count['SI<SHC']['nonsign'] += 1
+                
+        ax[1,i].text(2.5, y=ax[1,i].get_ylim()[1], s=sign_er, 
+                     ha='center', color='black')
+        
+        print('-'*10)
+        print(i, krus.pvalue, krus.statistic, len(Error1['SI-PCs'][i]), 
+              len(Error1['SHC-PCs'][i]))
+        
+        krus = kruskal(Error1['SHC-PCs'][i], Error1['NPCs'][i])
+        sign_er = determine_significance(krus.pvalue)
+        if np.median(Error1['NPCs'][i]) > np.median(Error1['SHC-PCs'][i]):
+            if sign_er:
+                sess_count['SHC<NPC']['sign'] += 1
+            else:
+                sess_count['SHC<NPC']['nonsign'] += 1
+        ax[1,i].text(2, y=ax[1,i].get_ylim()[1], s=sign_er, 
+                     ha='center', color='black')
+        
+        print('-'*10)
+        print(i, krus.pvalue, krus.statistic, len(Error1['SHC-PCs'][i]), 
+              len(Error1['NPCs'][i]))
+        
+        ax[0,i].set_title('Day%d'%(i+1))
+        ax[1,i].set_xticks([0,10,20,30,40])
+    ax[1,0].set_ylabel('Fraction')
+    ymax = []
+    for i in range(N_days):
+        ymax.append(ax[1,i].get_ylim()[1])
+    for i in range(N_days):
+        ax[1,i].set_ylim([0,max(np.array(ymax))])
+
+    fig.suptitle('%s, same day'%mouse)
+    fig.supxlabel('Absolute decoding \n error, [cm]')
+
+    if savefig:
+        fig.savefig(savedirct+r'\Mouse1_pcmeth_comparison.pdf', format='pdf', dpi=500)
+    return Error1, sess_count
